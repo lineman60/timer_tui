@@ -36,7 +36,7 @@ var (
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("240")).
-			Padding(1, 2)
+			Padding(0, 0)
 
 	inputStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("170"))
@@ -72,9 +72,12 @@ func (m *Model) mainView() string {
 	sb.WriteString(titleStyle.Width(80).Render("Timer TUI"))
 	sb.WriteString("\n\n")
 
-	sb.WriteString(m.projectListView())
-	sb.WriteString("  ")
-	sb.WriteString(m.projectDetailView())
+	boxes := lipgloss.JoinHorizontal(lipgloss.Top,
+		m.projectListView(),
+		"  ",
+		m.projectDetailView(),
+	)
+	sb.WriteString(boxes)
 	sb.WriteString("\n\n")
 	sb.WriteString(helpStyle.Render("Navigate: Up/Down | Start/Stop: Enter | New: n | Edit: e | Delete: d | Reset: r | Quit: q"))
 
@@ -93,9 +96,7 @@ func (m *Model) projectListView() string {
 			running = " ●"
 		}
 		remaining := p.MaxTime - p.Elapsed
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining = max(remaining, 0)
 		timerStr := formatDuration(remaining)
 
 		line := fmt.Sprintf("%s %s%s", p.Name, timerStr, running)
@@ -119,9 +120,7 @@ func (m *Model) projectDetailView() string {
 
 	t := m.Timers[p.ID]
 	remaining := p.MaxTime - p.Elapsed
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining = max(remaining, 0)
 
 	var timerStr string
 	if t.Running() {
