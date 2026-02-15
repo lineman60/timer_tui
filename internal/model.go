@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"timer_tui/internal/project"
+	"timer_tui/internal/timelog"
 	"timer_tui/internal/timer"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +26,17 @@ type Model struct {
 	Err            error
 	Timers         map[int64]*timer.Timer
 	repo           *project.Repository
+
+	// Session tracking for time logs
+	SessionStarts map[int64]time.Time // tracks when each project's current session started
+
+	// Tag input state (shown after stopping a timer)
+	ShowTagInput bool
+	TagInput     string
+	PendingLog   *timelog.TimeLog // the log entry waiting for a tag
+
+	// Time logs per project
+	TimeLogs map[int64][]timelog.TimeLog
 }
 
 func NewModel() (*Model, error) {
@@ -45,10 +57,21 @@ func NewModel() (*Model, error) {
 	}
 
 	timers := make(map[int64]*timer.Timer)
+	sessionStarts := make(map[int64]time.Time)
 	for i := range projects {
 		timers[projects[i].ID] = timer.New()
 		if projects[i].Running {
 			timers[projects[i].ID].Start()
+			sessionStarts[projects[i].ID] = time.Now()
+		}
+	}
+
+	// Load time logs for all projects
+	timeLogs := make(map[int64][]timelog.TimeLog)
+	for _, p := range projects {
+		logs, err := repo.GetLogsByProject(p.ID)
+		if err == nil {
+			timeLogs[p.ID] = logs
 		}
 	}
 
@@ -59,6 +82,8 @@ func NewModel() (*Model, error) {
 		ShowEditForm:  false,
 		Timers:        timers,
 		repo:          repo,
+		SessionStarts: sessionStarts,
+		TimeLogs:      timeLogs,
 	}
 
 	return m, nil
@@ -87,6 +112,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) View() string {
+	if m.ShowTagInput {
+		return m.tagInputView()
+	}
+
 	if len(m.Projects) == 0 && !m.ShowAddForm {
 		return m.emptyStateView()
 	}
@@ -123,6 +152,7 @@ func (m *Model) AddProject(name string, maxTime time.Duration) error {
 		return err
 	}
 	m.Timers[p.ID] = timer.New()
+	m.TimeLogs[p.ID] = nil
 	m.Projects = append(m.Projects, p)
 	m.SelectedIndex = len(m.Projects) - 1
 	return nil
@@ -146,6 +176,8 @@ func (m *Model) DeleteProject(id int64) error {
 		return err
 	}
 	delete(m.Timers, id)
+	delete(m.SessionStarts, id)
+	delete(m.TimeLogs, id)
 	for i, p := range m.Projects {
 		if p.ID == id {
 			m.Projects = append(m.Projects[:i], m.Projects[i+1:]...)
@@ -159,23 +191,64 @@ func (m *Model) DeleteProject(id int64) error {
 }
 
 func (m *Model) StopAllTimers() {
-	for _, t := range m.Timers {
-		t.Stop()
-	}
 	for _, p := range m.Projects {
-		p.Running = false
-		m.repo.Update(p)
+		t := m.Timers[p.ID]
+		if t.Running() {
+			t.Stop()
+			p.Elapsed = t.Elapsed()
+			p.Running = false
+			m.repo.Update(p)
+			// Note: when stopping all timers due to starting another,
+			// we silently log without a tag prompt
+			if startedAt, ok := m.SessionStarts[p.ID]; ok {
+				stoppedAt := time.Now()
+				duration := stoppedAt.Sub(startedAt)
+				log := &timelog.TimeLog{
+					ProjectID: p.ID,
+					StartedAt: startedAt,
+					StoppedAt: stoppedAt,
+					Duration:  duration,
+					Tag:       "",
+				}
+				m.repo.CreateLog(log)
+				m.TimeLogs[p.ID] = append([]timelog.TimeLog{*log}, m.TimeLogs[p.ID]...)
+				delete(m.SessionStarts, p.ID)
+			}
+		}
 	}
 }
 
 func (m *Model) Close() error {
-	for _, t := range m.Timers {
-		t.Stop()
+	for _, p := range m.Projects {
+		t := m.Timers[p.ID]
+		if t.Running() {
+			t.Stop()
+			p.Elapsed = t.Elapsed()
+			p.Running = false
+			// Log any running sessions on close
+			if startedAt, ok := m.SessionStarts[p.ID]; ok {
+				stoppedAt := time.Now()
+				duration := stoppedAt.Sub(startedAt)
+				log := &timelog.TimeLog{
+					ProjectID: p.ID,
+					StartedAt: startedAt,
+					StoppedAt: stoppedAt,
+					Duration:  duration,
+					Tag:       "",
+				}
+				m.repo.CreateLog(log)
+			}
+			m.repo.Update(p)
+		}
 	}
 	return m.repo.Close()
 }
 
 func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.ShowTagInput {
+		return m.handleTagInput(msg)
+	}
+
 	if m.ShowAddForm || m.ShowEditForm {
 		return m.handleFormInput(msg)
 	}
@@ -196,15 +269,36 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p != nil {
 			t := m.SelectedTimer()
 			if t.Running() {
+				// Stop the timer and show tag input prompt
 				t.Stop()
-				p.Running = false
 				p.Elapsed = t.Elapsed()
+				p.Running = false
 				m.repo.Update(p)
+
+				stoppedAt := time.Now()
+				startedAt := stoppedAt // fallback
+				if sa, ok := m.SessionStarts[p.ID]; ok {
+					startedAt = sa
+					delete(m.SessionStarts, p.ID)
+				}
+				duration := stoppedAt.Sub(startedAt)
+
+				m.PendingLog = &timelog.TimeLog{
+					ProjectID: p.ID,
+					StartedAt: startedAt,
+					StoppedAt: stoppedAt,
+					Duration:  duration,
+					Tag:       "",
+				}
+				m.TagInput = ""
+				m.ShowTagInput = true
 			} else {
+				// Stop all other timers first (will auto-log them without tag)
 				m.StopAllTimers()
 				t.SetElapsed(p.Elapsed)
 				t.Start()
 				p.Running = true
+				m.SessionStarts[p.ID] = time.Now()
 				m.repo.Update(p)
 			}
 		}
@@ -234,10 +328,52 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			t.Reset()
 			p.Elapsed = 0
 			p.Running = false
+			delete(m.SessionStarts, p.ID)
 			m.repo.Update(p)
 		}
 	case "tab":
 		m.InputFocus = 1 - m.InputFocus
+	}
+	return m, nil
+}
+
+func (m *Model) handleTagInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "esc":
+		// Save the log without a tag
+		if m.PendingLog != nil {
+			m.PendingLog.Tag = ""
+			m.repo.CreateLog(m.PendingLog)
+			m.TimeLogs[m.PendingLog.ProjectID] = append(
+				[]timelog.TimeLog{*m.PendingLog},
+				m.TimeLogs[m.PendingLog.ProjectID]...,
+			)
+			m.PendingLog = nil
+		}
+		m.ShowTagInput = false
+		m.TagInput = ""
+	case "enter":
+		// Save the log with the tag
+		if m.PendingLog != nil {
+			m.PendingLog.Tag = m.TagInput
+			m.repo.CreateLog(m.PendingLog)
+			m.TimeLogs[m.PendingLog.ProjectID] = append(
+				[]timelog.TimeLog{*m.PendingLog},
+				m.TimeLogs[m.PendingLog.ProjectID]...,
+			)
+			m.PendingLog = nil
+		}
+		m.ShowTagInput = false
+		m.TagInput = ""
+	case "backspace":
+		if len(m.TagInput) > 0 {
+			m.TagInput = m.TagInput[:len(m.TagInput)-1]
+		}
+	default:
+		runes := []rune(msg.String())
+		if len(runes) == 1 {
+			m.TagInput += string(runes[0])
+		}
 	}
 	return m, nil
 }

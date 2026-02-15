@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"timer_tui/internal/timelog"
+
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -43,6 +45,16 @@ var (
 
 	inputInactiveStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("240"))
+
+	logHeaderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("86")).
+			Bold(true)
+
+	logTagStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("170"))
+
+	logTimeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
 )
 
 func formatDuration(d time.Duration) string {
@@ -143,6 +155,22 @@ func (m *Model) projectDetailView() string {
 	sb.WriteString(timerStr)
 	sb.WriteString(fmt.Sprintf("\n\n%s\n", statusStyle.Render(status)))
 	sb.WriteString(fmt.Sprintf("%s\n", maxTimeStr))
+
+	// Show recent time logs
+	logs := m.TimeLogs[p.ID]
+	if len(logs) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(logHeaderStyle.Render("Recent Logs"))
+		sb.WriteString("\n")
+		displayCount := len(logs)
+		if displayCount > 5 {
+			displayCount = 5
+		}
+		for _, l := range logs[:displayCount] {
+			sb.WriteString(m.formatLogEntry(l))
+			sb.WriteString("\n")
+		}
+	}
 
 	return boxStyle.Width(45).Height(15).Render(sb.String())
 }
@@ -261,6 +289,43 @@ func (m *Model) editFormView() string {
 		lipgloss.Center, lipgloss.Center,
 		boxStyle.Width(50).Render(form),
 	)
+}
+
+func (m *Model) tagInputView() string {
+	var sb strings.Builder
+	sb.WriteString(titleStyle.Width(80).Render("Log Time Session"))
+	sb.WriteString("\n\n")
+
+	durationStr := ""
+	if m.PendingLog != nil {
+		durationStr = formatDuration(m.PendingLog.Duration)
+	}
+
+	label := inputStyle.Render("→ Tag: ")
+	value := inputStyle.Render(m.TagInput + "\u2588")
+
+	form := fmt.Sprintf(
+		"%s\n\n%s%s\n\n%s",
+		fmt.Sprintf("Session duration: %s", timerDisplayStyle.Render(durationStr)),
+		label, value,
+		helpStyle.Render("Enter: Save | Esc: Skip (no tag)"),
+	)
+
+	return lipgloss.Place(
+		80, 24,
+		lipgloss.Center, lipgloss.Center,
+		boxStyle.Width(50).Render(form),
+	)
+}
+
+func (m *Model) formatLogEntry(l timelog.TimeLog) string {
+	timeStr := logTimeStyle.Render(l.StoppedAt.Format("Jan 02 15:04"))
+	dur := formatDuration(l.Duration)
+	tag := ""
+	if l.Tag != "" {
+		tag = " " + logTagStyle.Render("["+l.Tag+"]")
+	}
+	return fmt.Sprintf("  %s  %s%s", timeStr, dur, tag)
 }
 
 var (

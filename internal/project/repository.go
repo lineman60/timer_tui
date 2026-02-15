@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"timer_tui/internal/timelog"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -31,7 +33,7 @@ func NewRepository() (*Repository, error) {
 }
 
 func (r *Repository) init() error {
-	query := `
+	projectsQuery := `
 	CREATE TABLE IF NOT EXISTS projects (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
@@ -40,7 +42,22 @@ func (r *Repository) init() error {
 		elapsed INTEGER DEFAULT 0
 	)
 	`
-	_, err := r.db.Exec(query)
+	if _, err := r.db.Exec(projectsQuery); err != nil {
+		return err
+	}
+
+	timeLogsQuery := `
+	CREATE TABLE IF NOT EXISTS time_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id INTEGER NOT NULL,
+		started_at TEXT NOT NULL,
+		stopped_at TEXT NOT NULL,
+		duration INTEGER NOT NULL,
+		tag TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+	)
+	`
+	_, err := r.db.Exec(timeLogsQuery)
 	return err
 }
 
@@ -125,6 +142,52 @@ func (r *Repository) Delete(id int64) error {
 func (r *Repository) StopAllTimers() error {
 	_, err := r.db.Exec("UPDATE projects SET running = 0")
 	return err
+}
+
+func (r *Repository) CreateLog(log *timelog.TimeLog) error {
+	result, err := r.db.Exec(
+		"INSERT INTO time_logs (project_id, started_at, stopped_at, duration, tag) VALUES (?, ?, ?, ?, ?)",
+		log.ProjectID,
+		log.StartedAt.Format(time.RFC3339),
+		log.StoppedAt.Format(time.RFC3339),
+		int64(log.Duration),
+		log.Tag,
+	)
+	if err != nil {
+		return err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+	log.ID = id
+	return nil
+}
+
+func (r *Repository) GetLogsByProject(projectID int64) ([]timelog.TimeLog, error) {
+	rows, err := r.db.Query(
+		"SELECT id, project_id, started_at, stopped_at, duration, tag FROM time_logs WHERE project_id = ? ORDER BY stopped_at DESC",
+		projectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []timelog.TimeLog
+	for rows.Next() {
+		var l timelog.TimeLog
+		var startedAt, stoppedAt string
+		var duration int64
+		if err := rows.Scan(&l.ID, &l.ProjectID, &startedAt, &stoppedAt, &duration, &l.Tag); err != nil {
+			return nil, err
+		}
+		l.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+		l.StoppedAt, _ = time.Parse(time.RFC3339, stoppedAt)
+		l.Duration = time.Duration(duration)
+		logs = append(logs, l)
+	}
+	return logs, nil
 }
 
 func (r *Repository) Close() error {
