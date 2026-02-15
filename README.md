@@ -21,7 +21,7 @@ Clone the repository, build, and run:
 
 1. Build
 ```bash
-go build -o timer_tui
+go build -o timer_tui main.go
 ```
 
 2. Run
