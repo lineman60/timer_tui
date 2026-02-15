@@ -37,6 +37,11 @@ type Model struct {
 
 	// Time logs per project
 	TimeLogs map[int64][]timelog.TimeLog
+
+	// All-logs viewer state
+	ShowLogView   bool
+	LogViewScroll int
+	AllLogs       []project.LogWithProject
 }
 
 func NewModel() (*Model, error) {
@@ -114,6 +119,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	if m.ShowTagInput {
 		return m.tagInputView()
+	}
+
+	if m.ShowLogView {
+		return m.allLogsView()
 	}
 
 	if len(m.Projects) == 0 && !m.ShowAddForm {
@@ -249,6 +258,10 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTagInput(msg)
 	}
 
+	if m.ShowLogView {
+		return m.handleLogViewInput(msg)
+	}
+
 	if m.ShowAddForm || m.ShowEditForm {
 		return m.handleFormInput(msg)
 	}
@@ -331,8 +344,39 @@ func (m *Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			delete(m.SessionStarts, p.ID)
 			m.repo.Update(p)
 		}
+	case "l":
+		// Open the all-logs viewer
+		allLogs, err := m.repo.GetAllLogs()
+		if err == nil {
+			m.AllLogs = allLogs
+		} else {
+			m.AllLogs = nil
+		}
+		m.ShowLogView = true
+		m.LogViewScroll = 0
 	case "tab":
 		m.InputFocus = 1 - m.InputFocus
+	}
+	return m, nil
+}
+
+func (m *Model) handleLogViewInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q", "esc", "l":
+		m.ShowLogView = false
+		m.AllLogs = nil
+	case "up", "k":
+		if m.LogViewScroll > 0 {
+			m.LogViewScroll--
+		}
+	case "down", "j":
+		maxScroll := len(m.AllLogs) - 1
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.LogViewScroll < maxScroll {
+			m.LogViewScroll++
+		}
 	}
 	return m, nil
 }

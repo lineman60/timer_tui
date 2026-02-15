@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"timer_tui/internal/project"
 	"timer_tui/internal/timelog"
 
 	"github.com/charmbracelet/lipgloss"
@@ -55,6 +56,18 @@ var (
 
 	logTimeStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
+
+	logProjectStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("69")).
+			Bold(true)
+
+	logTableHeaderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("86")).
+				Bold(true).
+				Underline(true)
+
+	logRowSelectedStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("235"))
 )
 
 func formatDuration(d time.Duration) string {
@@ -91,7 +104,7 @@ func (m *Model) mainView() string {
 	)
 	sb.WriteString(boxes)
 	sb.WriteString("\n\n")
-	sb.WriteString(helpStyle.Render("Navigate: Up/Down | Start/Stop: Enter | New: n | Edit: e | Delete: d | Reset: r | Quit: q"))
+	sb.WriteString(helpStyle.Render("Navigate: Up/Down | Start/Stop: Enter | New: n | Edit: e | Delete: d | Reset: r | Logs: l | Quit: q"))
 
 	return sb.String()
 }
@@ -326,6 +339,106 @@ func (m *Model) formatLogEntry(l timelog.TimeLog) string {
 		tag = " " + logTagStyle.Render("["+l.Tag+"]")
 	}
 	return fmt.Sprintf("  %s  %s%s", timeStr, dur, tag)
+}
+
+func (m *Model) allLogsView() string {
+	var sb strings.Builder
+
+	sb.WriteString(titleStyle.Width(80).Render("All Time Logs"))
+	sb.WriteString("\n\n")
+
+	if len(m.AllLogs) == 0 {
+		content := boxStyle.Width(76).Height(18).Render(
+			inactiveStyle.Render("No time logs recorded yet."),
+		)
+		sb.WriteString(content)
+		sb.WriteString("\n\n")
+		sb.WriteString(helpStyle.Render("Esc/l: Back | q: Quit"))
+		return sb.String()
+	}
+
+	// Table header
+	header := fmt.Sprintf("  %-16s %-14s %-10s %s",
+		logTableHeaderStyle.Render("Project"),
+		logTableHeaderStyle.Render("Date"),
+		logTableHeaderStyle.Render("Duration"),
+		logTableHeaderStyle.Render("Tag"),
+	)
+
+	var tableBody strings.Builder
+	tableBody.WriteString(header)
+	tableBody.WriteString("\n")
+
+	// Determine visible window (how many rows fit in the box)
+	visibleRows := 15
+	totalLogs := len(m.AllLogs)
+
+	// Clamp scroll so we don't go past the end
+	maxScroll := totalLogs - visibleRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.LogViewScroll > maxScroll {
+		m.LogViewScroll = maxScroll
+	}
+
+	// Determine slice to display
+	start := m.LogViewScroll
+	end := start + visibleRows
+	if end > totalLogs {
+		end = totalLogs
+	}
+
+	for i := start; i < end; i++ {
+		lp := m.AllLogs[i]
+		row := m.formatAllLogsRow(lp, i == m.LogViewScroll)
+		tableBody.WriteString(row)
+		tableBody.WriteString("\n")
+	}
+
+	// Scroll indicators
+	if totalLogs > visibleRows {
+		scrollInfo := fmt.Sprintf("  %s",
+			inactiveStyle.Render(fmt.Sprintf("(%d-%d of %d)", start+1, end, totalLogs)),
+		)
+		tableBody.WriteString(scrollInfo)
+	}
+
+	sb.WriteString(boxStyle.Width(76).Height(18).Render(tableBody.String()))
+	sb.WriteString("\n\n")
+	sb.WriteString(helpStyle.Render("Up/Down: Scroll | Esc/l: Back | q: Quit"))
+
+	return sb.String()
+}
+
+func (m *Model) formatAllLogsRow(lp project.LogWithProject, highlighted bool) string {
+	projName := lp.ProjectName
+	if len(projName) > 14 {
+		projName = projName[:13] + "…"
+	}
+
+	dateStr := lp.Log.StoppedAt.Format("Jan 02 15:04")
+	durStr := formatDuration(lp.Log.Duration)
+
+	tag := ""
+	if lp.Log.Tag != "" {
+		tag = lp.Log.Tag
+		if len(tag) > 20 {
+			tag = tag[:19] + "…"
+		}
+	}
+
+	row := fmt.Sprintf("  %-16s %-14s %-10s %s",
+		logProjectStyle.Render(projName),
+		logTimeStyle.Render(dateStr),
+		durStr,
+		logTagStyle.Render(tag),
+	)
+
+	if highlighted {
+		return logRowSelectedStyle.Render(row)
+	}
+	return row
 }
 
 var (

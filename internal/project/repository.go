@@ -190,6 +190,43 @@ func (r *Repository) GetLogsByProject(projectID int64) ([]timelog.TimeLog, error
 	return logs, nil
 }
 
+// LogWithProject pairs a TimeLog with the project name it belongs to.
+type LogWithProject struct {
+	Log         timelog.TimeLog
+	ProjectName string
+}
+
+func (r *Repository) GetAllLogs() ([]LogWithProject, error) {
+	rows, err := r.db.Query(
+		`SELECT tl.id, tl.project_id, p.name, tl.started_at, tl.stopped_at, tl.duration, tl.tag
+		 FROM time_logs tl
+		 JOIN projects p ON tl.project_id = p.id
+		 ORDER BY tl.stopped_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []LogWithProject
+	for rows.Next() {
+		var lp LogWithProject
+		var startedAt, stoppedAt string
+		var duration int64
+		if err := rows.Scan(
+			&lp.Log.ID, &lp.Log.ProjectID, &lp.ProjectName,
+			&startedAt, &stoppedAt, &duration, &lp.Log.Tag,
+		); err != nil {
+			return nil, err
+		}
+		lp.Log.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+		lp.Log.StoppedAt, _ = time.Parse(time.RFC3339, stoppedAt)
+		lp.Log.Duration = time.Duration(duration)
+		results = append(results, lp)
+	}
+	return results, nil
+}
+
 func (r *Repository) Close() error {
 	return r.db.Close()
 }
